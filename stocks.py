@@ -152,14 +152,46 @@ AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 ]
 
+def get_crumb():
+    """Get a crumb and cookie from Yahoo Finance for authenticated requests."""
+    try:
+        req = urllib.request.Request(
+            "https://query1.finance.yahoo.com/v1/test/getcrumb",
+            headers={
+                "User-Agent": random.choice(AGENTS),
+                "Accept": "text/plain",
+            }
+        )
+        with opener.open(req, timeout=10) as r:
+            return r.read().decode()
+    except Exception as e:
+        print(f"⚠️  Could not get crumb: {e}")
+        return None
+
+# Get crumb once at startup
+YAHOO_CRUMB = get_crumb()
+
 def safe_get(url, retries=5):
+    global YAHOO_CRUMB
+    # Append crumb if we have one
+    if YAHOO_CRUMB:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}crumb={urllib.parse.quote(YAHOO_CRUMB)}"
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": random.choice(AGENTS)})
             with opener.open(req, timeout=30) as r:
                 return json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
-            if e.code == 429:
+            if e.code == 401:
+                print(f"401 — refreshing crumb and retrying...")
+                YAHOO_CRUMB = get_crumb()
+                if YAHOO_CRUMB:
+                    sep = "&" if "crumb=" not in url else ""
+                    url = url.split("&crumb=")[0] + f"&crumb={urllib.parse.quote(YAHOO_CRUMB)}"
+                time.sleep(2)
+                continue
+            elif e.code == 429:
                 wait = (2 ** attempt) * 10 + random.uniform(10, 25)
                 print(f"429 — waiting {wait:.0f}s...")
                 time.sleep(wait)
