@@ -123,6 +123,11 @@ SHEET_URL = "https://script.google.com/macros/s/AKfycbzGjU2QIiOlEtIHxMnFks1DYXDw
 
 def log_row(row: dict):
     params = urllib.parse.urlencode({k: (v if v is not None else "") for k, v in row.items()})
+    # Debug: print first row fully to verify all fields are being sent
+    if not hasattr(log_row, '_printed_sample'):
+        print(f"🔍 Sample row being sent: {json.dumps(row, indent=2)}")
+        print(f"🔍 URL params: {params[:500]}")
+        log_row._printed_sample = True
     try:
         req = urllib.request.Request(
             SHEET_URL + "?" + params,
