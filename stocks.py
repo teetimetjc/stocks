@@ -94,10 +94,17 @@ def log_to_sheet(ticker, name, price, vwap_diff, rsi5, vol_ratio, pl_pct,
         "long_signal":  long_signal,
         "long_why":     long_why,
     }).encode()
+    full_url = url + "?" + params.decode()
+    print(f"📤 Sending to sheet: {ticker} @ ${price:.2f}")
     try:
-        req = urllib.request.urlopen(url + "?" + params.decode(), timeout=15)
-        req.read()
-        print(f"📊 Logged → {ticker} | Quick: {quick_signal} | Long: {long_signal}")
+        req = urllib.request.Request(full_url)
+        req.add_header("User-Agent", "Mozilla/5.0")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode()
+            status = resp.status
+            print(f"📊 Sheet response {status} for {ticker}: {body[:100]}")
+    except urllib.error.HTTPError as e:
+        print(f"⚠️  Sheet HTTP {e.code} for {ticker}: {e.read().decode()[:200]}")
     except Exception as e:
         print(f"⚠️  Sheet log failed for {ticker}: {e}")
 
