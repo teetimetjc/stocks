@@ -10,25 +10,25 @@ import http.client
 from http.cookiejar import CookieJar
 
 # -------------------------------------------------------------------
-# HOLDINGS
+# HOLDINGS — your cost basis for P/L calculation
 # -------------------------------------------------------------------
 HOLDINGS = {
-    "VOO":   {"shares": 4.33,    "avg": 604.54,   "never_sell_all": True},
-    "QQQ":   {"shares": 0.9284,  "avg": 592.39,   "never_sell_all": True},
-    "VTI":   {"shares": 1.55,    "avg": 323.13,   "never_sell_all": True},
-    "SPY":   {"shares": 0.7624,  "avg": 655.81,   "never_sell_all": True},
-    "VOOG":  {"shares": 1.16,    "avg": 429.40,   "never_sell_all": True},
-    "SCHD":  {"shares": 2.85,    "avg": 27.02,    "never_sell_all": True},
-    "DIA":   {"shares": 0.1718,  "avg": 464.47,   "never_sell_all": True},
-    "GLD":   {"shares": 0.1394,  "avg": 365.43,   "never_sell_all": True},
-    "SMH":   {"shares": 0.1500,  "avg": 333.31,   "never_sell_all": True},
-    "JPM":   {"shares": 0.0862,  "avg": 304.51,   "never_sell_all": True},
-    "XLK":   {"shares": 0.3495,  "avg": 143.03,   "never_sell_all": True},
-    "F":     {"shares": 3.81,    "avg": 13.23,    "never_sell_all": True},
-    "XLV":   {"shares": 0.3469,  "avg": 145.54,   "never_sell_all": True},
-    "NVDA":  {"shares": 0.2455,  "avg": 205.65,   "never_sell_all": True},
-    "META":  {"shares": 0.0791,  "avg": 638.41,   "never_sell_all": True},
-    "VOOV":  {"shares": 0.2473,  "avg": 202.18,   "never_sell_all": True},
+    "VOO":   {"shares": 4.33,    "avg": 604.54},
+    "QQQ":   {"shares": 0.9284,  "avg": 592.39},
+    "VTI":   {"shares": 1.55,    "avg": 323.13},
+    "SPY":   {"shares": 0.7624,  "avg": 655.81},
+    "VOOG":  {"shares": 1.16,    "avg": 429.40},
+    "SCHD":  {"shares": 2.85,    "avg": 27.02},
+    "DIA":   {"shares": 0.1718,  "avg": 464.47},
+    "GLD":   {"shares": 0.1394,  "avg": 365.43},
+    "SMH":   {"shares": 0.1500,  "avg": 333.31},
+    "JPM":   {"shares": 0.0862,  "avg": 304.51},
+    "XLK":   {"shares": 0.3495,  "avg": 143.03},
+    "F":     {"shares": 3.81,    "avg": 13.23},
+    "XLV":   {"shares": 0.3469,  "avg": 145.54},
+    "NVDA":  {"shares": 0.2455,  "avg": 205.65},
+    "META":  {"shares": 0.0791,  "avg": 638.41},
+    "VOOV":  {"shares": 0.2473,  "avg": 202.18},
 }
 
 CRYPTO_HOLDINGS = {
@@ -38,6 +38,52 @@ CRYPTO_HOLDINGS = {
 }
 
 # -------------------------------------------------------------------
+# Tickers to scan
+# -------------------------------------------------------------------
+SCAN_TICKERS = [
+    "VOO", "QQQ", "VTI", "SPY", "VOOG", "SCHD", "DIA",
+    "GLD", "SMH", "JPM", "XLK", "F", "XLV", "NVDA", "META", "VOOV",
+    # Popular stocks
+    "AAPL", "TSLA", "AMZN", "MSFT", "GOOGL", "AMD", "AVGO", "BRK-B",
+    "COST", "DIS", "HD", "KO", "LLY", "MA", "MRK", "NFLX", "ORCL",
+    "PFE", "PG", "UNH", "V", "WMT", "XOM",
+    # Popular ETFs
+    "ARKK", "IWF", "IVV", "IVW", "MGK", "OEF", "SCHG", "SPYG",
+    "TMFC", "VEA", "VUG", "VWO", "VYM", "XLG",
+    # 2025 additions
+    "TQQQ", "SOXL", "IJR", "VGT", "VT", "VTV", "VB", "BNDX",
+    "TSLL", "NVDL", "QQQM", "BKLC", "FSTA", "SGOL",
+    "XLE", "XLF", "XLI", "XLP", "XLU", "XLY",
+]
+
+CRYPTO_IDS = [
+    "bitcoin",        # BTC
+    "ethereum",       # ETH
+    "ripple",         # XRP
+    "solana",         # SOL
+    "binancecoin",    # BNB
+    "dogecoin",       # DOGE
+    "cardano",        # ADA
+    "tron",           # TRX
+    "avalanche-2",    # AVAX
+    "chainlink",      # LINK
+    "shiba-inu",      # SHIB
+    "sui",            # SUI
+    "stellar",        # XLM
+    "polkadot",       # DOT
+    "hyperliquid",    # HYPE
+    "litecoin",       # LTC
+    "uniswap",        # UNI
+    "bitcoin-cash",   # BCH
+    "pepe",           # PEPE
+    "near",           # NEAR
+    "aptos",          # APT
+    "internet-computer", # ICP
+    "official-trump",          # TRUMP
+    "world-liberty-financial", # WLFI
+]
+
+# -------------------------------------------------------------------
 # Pushover
 # -------------------------------------------------------------------
 PUSHOVER_USER  = os.environ.get("PUSHOVER_USER", "")
@@ -45,7 +91,7 @@ PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")
 
 def send_push(title, message, priority=0):
     if not PUSHOVER_USER or not PUSHOVER_TOKEN:
-        print(f"⚠️  Pushover not configured — skipping: {title}")
+        print(f"⚠️  Pushover not configured: {title}")
         return
     try:
         conn = http.client.HTTPSConnection("api.pushover.net:443")
@@ -62,58 +108,39 @@ def send_push(title, message, priority=0):
             {"Content-type": "application/x-www-form-urlencoded"}
         )
         resp = conn.getresponse()
-        if resp.status == 200:
-            print(f"📲 Pushover sent: {title}")
-        else:
-            print(f"⚠️  Pushover HTTP {resp.status}")
+        print(f"📲 Pushover {'sent' if resp.status == 200 else f'failed {resp.status}'}: {title}")
     except Exception as e:
         print(f"⚠️  Pushover error: {e}")
 
 # -------------------------------------------------------------------
 # Google Sheets logger
+# Columns: Timestamp | Type | Ticker | Name | Price | Change% |
+#          AfterHours% | Volume | VolRatio | 52wkHigh | 52wkLow |
+#          PctFrom52wkHigh | PctFrom52wkLow | MarketCap |
+#          PE | EPS | HoldingValue | PL% | Signal | SignalReason
 # -------------------------------------------------------------------
-def log_to_sheet(ticker, name, price, vwap_diff, rsi5, vol_ratio, pl_pct,
-                 quick_signal, quick_why, rsi14_daily, ma50, sma200,
-                 macd_daily, atr_pct, long_signal, long_why):
-    url = "https://script.google.com/macros/s/AKfycbzGjU2QIiOlEtIHxMnFks1DYXDwuDRwPzun_BXZnLVp2iW8AeV4Up1jT7QMkiJJARHvUA/exec"
-    params = urllib.parse.urlencode({
-        "ticker":       ticker,
-        "name":         name,
-        "price":        round(price, 6),
-        "vwap_diff":    round(vwap_diff, 2)   if vwap_diff  is not None else "",
-        "rsi5":         round(rsi5, 1)         if rsi5       is not None else "",
-        "vol_ratio":    round(vol_ratio, 2),
-        "pl_pct":       round(pl_pct, 1),
-        "quick_signal": quick_signal,
-        "quick_why":    quick_why,
-        "rsi14_daily":  round(rsi14_daily, 1)  if rsi14_daily is not None else "",
-        "ma50":         round(ma50, 2)          if ma50        is not None else "",
-        "sma200":       round(sma200, 2)        if sma200      is not None else "",
-        "macd_daily":   macd_daily              if macd_daily  is not None else "",
-        "atr_pct":      round(atr_pct, 2)       if atr_pct     is not None else "",
-        "long_signal":  long_signal,
-        "long_why":     long_why,
-    }).encode()
-    full_url = url + "?" + params.decode()
-    print(f"📤 Sending to sheet: {ticker} @ ${price:.2f}")
+SHEET_URL = "https://script.google.com/macros/s/AKfycbzGjU2QIiOlEtIHxMnFks1DYXDwuDRwPzun_BXZnLVp2iW8AeV4Up1jT7QMkiJJARHvUA/exec"
+
+def log_row(row: dict):
+    params = urllib.parse.urlencode({k: (v if v is not None else "") for k, v in row.items()})
     try:
-        req = urllib.request.Request(full_url)
-        req.add_header("User-Agent", "Mozilla/5.0")
+        req = urllib.request.Request(
+            SHEET_URL + "?" + params,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = resp.read().decode()
-            status = resp.status
-            print(f"📊 Sheet response {status} for {ticker}: {body[:100]}")
+            print(f"📊 Sheet {resp.status} → {row.get('ticker','?')}: {body[:80]}")
     except urllib.error.HTTPError as e:
-        print(f"⚠️  Sheet HTTP {e.code} for {ticker}: {e.read().decode()[:200]}")
+        print(f"⚠️  Sheet HTTP {e.code} for {row.get('ticker','?')}: {e.read().decode()[:100]}")
     except Exception as e:
-        print(f"⚠️  Sheet log failed for {ticker}: {e}")
+        print(f"⚠️  Sheet error for {row.get('ticker','?')}: {e}")
 
 # -------------------------------------------------------------------
-# HTTP helpers
+# HTTP helper
 # -------------------------------------------------------------------
 cookie_jar = CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
-
 AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -125,11 +152,7 @@ def safe_get(url, retries=5):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": random.choice(AGENTS)})
             with opener.open(req, timeout=30) as r:
-                data = json.loads(r.read().decode())
-                if isinstance(data, dict) and data.get("finance", {}).get("error"):
-                    print(f"Yahoo error: {data['finance']['error']}")
-                    return None
-                return data
+                return json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 wait = (2 ** attempt) * 10 + random.uniform(10, 25)
@@ -142,277 +165,219 @@ def safe_get(url, retries=5):
             if attempt == retries - 1:
                 print(f"Failed after {retries} attempts: {e}")
                 return None
-            time.sleep((2 ** attempt) * 2 + random.uniform(2, 5))
+            time.sleep((2 ** attempt) * 2 + random.uniform(1, 3))
     return None
 
 # -------------------------------------------------------------------
-# Indicators
+# Signal logic (quote-data only, no charts needed)
 # -------------------------------------------------------------------
-def calculate_rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return 50.0
-    gains = losses = 0.0
-    for i in range(1, period + 1):
-        chg = closes[i] - closes[i - 1]
-        if chg > 0: gains += chg
-        else:       losses -= chg
-    avg_gain = gains / period
-    avg_loss = losses / period
-    for i in range(period + 1, len(closes)):
-        chg = closes[i] - closes[i - 1]
-        avg_gain = (avg_gain * (period - 1) + max(chg, 0))  / period
-        avg_loss = (avg_loss * (period - 1) + max(-chg, 0)) / period
-    if avg_loss == 0:
-        return 100.0
-    return round(100 - 100 / (1 + avg_gain / avg_loss), 2)
+def generate_signal(ticker, price, change_pct, vol_ratio,
+                    pct_from_52wk_high, pct_from_52wk_low,
+                    afterhours_pct, pl_pct):
+    signals = []
 
-# -------------------------------------------------------------------
-# Ticker categories & signal logic
-# -------------------------------------------------------------------
-BROAD_ETFS = ["VOO", "QQQ", "VTI", "SPY", "VOOG", "SCHD", "DIA", "GLD", "XLK", "XLV", "VOOV"]
-MEGA_CAPS  = ["AAPL", "TSLA", "AMZN", "MSFT", "GOOGL", "NVDA", "META"]
-HIGH_BETA  = ["SMH", "JPM", "F", "TQQQ", "SOXL"]
+    # Near 52-week low — potential buy zone
+    if pct_from_52wk_low is not None and pct_from_52wk_low <= 5:
+        signals.append(f"⚠️ Near 52wk low (+{pct_from_52wk_low:.1f}%)")
 
-DAILY_RISK_BUDGET = 100
-daily_spent = 0
+    # Near 52-week high — momentum
+    if pct_from_52wk_high is not None and pct_from_52wk_high >= -2:
+        signals.append(f"🚀 Near 52wk high ({pct_from_52wk_high:.1f}%)")
 
-def get_vwap_threshold(ticker):
-    if ticker in BROAD_ETFS: return -0.6
-    if ticker in MEGA_CAPS:  return -0.8
-    if ticker in HIGH_BETA:  return -1.2
-    return -1.0
+    # Volume spike
+    if vol_ratio is not None and vol_ratio >= 2.0:
+        signals.append(f"📊 Volume spike ({vol_ratio:.1f}x avg)")
 
-def is_market_hours():
-    now = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=-5)))
-    if now.weekday() >= 5: return False
-    return now.replace(hour=9, minute=30) <= now <= now.replace(hour=16, minute=0)
+    # Big intraday move
+    if change_pct is not None:
+        if change_pct <= -3:
+            signals.append(f"🔴 Big drop ({change_pct:.1f}%)")
+        elif change_pct >= 3:
+            signals.append(f"🟢 Big gain ({change_pct:.1f}%)")
 
-def in_quick_window():
-    now = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=-5)))
-    return now.replace(hour=9, minute=40) <= now <= now.replace(hour=15, minute=55)
+    # After hours move
+    if afterhours_pct is not None:
+        if afterhours_pct <= -2:
+            signals.append(f"🌙 AH drop ({afterhours_pct:.1f}%)")
+        elif afterhours_pct >= 2:
+            signals.append(f"🌙 AH spike ({afterhours_pct:.1f}%)")
 
-def generate_quick_signal(ticker, price, vwap_diff_pct, rsi_5, vol_ratio, pl_pct, atr_pct):
-    global daily_spent
-    if not in_quick_window() or not is_market_hours():
-        return "QUICK HOLD", "Outside quick window"
-    if rsi_5 < 20 and vwap_diff_pct < get_vwap_threshold(ticker) and vol_ratio > 1.5:
-        amt = 20 / 2 if (atr_pct and atr_pct > 2) else 20
-        if daily_spent + amt > DAILY_RISK_BUDGET:
-            return "QUICK HOLD", "Risk budget exceeded"
-        daily_spent += amt
-        return f"QUICK BUY ${amt}", "RSI5 oversold + VWAP dip + vol spike"
-    if ticker in HOLDINGS:
-        if pl_pct > 20:
-            pct, reason = 0.15, "20%+ quick profit → trim 15%"
-        elif pl_pct > 10:
-            pct, reason = 0.10, "10%+ quick profit → trim 10%"
-        else:
-            return "QUICK HOLD", "No quick edge"
-        keep   = 0.05 if HOLDINGS[ticker]["never_sell_all"] else 0
-        shares = min(HOLDINGS[ticker]["shares"] * pct, HOLDINGS[ticker]["shares"] - keep)
-        dollars = shares * price
-        if dollars > 10:
-            return f"QUICK SELL ${dollars:,.0f}", reason
-    return "QUICK HOLD", "No quick edge"
+    # P/L on holdings
+    if pl_pct is not None and ticker in HOLDINGS:
+        if pl_pct >= 20:
+            signals.append(f"💰 Consider trim (up {pl_pct:.1f}%)")
+        elif pl_pct <= -10:
+            signals.append(f"🔻 Down {pl_pct:.1f}% from avg")
 
-def generate_long_signal(ticker, price, rsi_14, ma50_pullback_pct, vol_ratio, pl_pct, atr_pct, sma200):
-    global daily_spent
-    if not is_market_hours():
-        return "LONG HOLD", "Market closed"
-    uptrend = (price > sma200) if sma200 else True
-    if not (uptrend or (rsi_14 and rsi_14 < 25)):
-        return "LONG HOLD", "Not in uptrend"
-    if (30 <= (rsi_14 or 50) <= 45 and
-            -6 <= (ma50_pullback_pct or 0) <= -3 and
-            vol_ratio > 1.2):
-        amt = 100 / 2 if (atr_pct and atr_pct > 2) else 100
-        if daily_spent + amt > DAILY_RISK_BUDGET:
-            return "LONG HOLD", "Risk budget exceeded"
-        daily_spent += amt
-        return f"LONG BUY ${amt}", "RSI14 30-45 + MA50 pullback + vol confirm"
-    if ticker in HOLDINGS:
-        if pl_pct > 200:
-            pct, reason = 0.50, "200%+ profit → taking half"
-        elif pl_pct > 120:
-            pct, reason = 0.35, "120%+ profit → trimming 35%"
-        elif pl_pct > 70:
-            pct, reason = 0.25, "70%+ profit → trimming 25%"
-        else:
-            return "LONG HOLD", "No long edge"
-        keep   = 0.05 if HOLDINGS[ticker]["never_sell_all"] else 0
-        shares = min(HOLDINGS[ticker]["shares"] * pct, HOLDINGS[ticker]["shares"] - keep)
-        dollars = shares * price
-        if dollars > 30:
-            return f"LONG SELL ${dollars:,.0f}", reason
-    return "LONG HOLD", "No long edge"
+    return " | ".join(signals) if signals else "—"
 
 # -------------------------------------------------------------------
-# Stock / ETF scan — BATCHED (one API call for all quotes)
+# Stock / ETF scan — single batch call
 # -------------------------------------------------------------------
-SCAN_TICKERS = list(HOLDINGS.keys()) + [
-    "AAPL", "TSLA", "AMZN", "MSFT", "GOOGL", "SCHG", "TQQQ", "SOXL"
-]
-
-def fetch_all_quotes(tickers):
-    """Fetch all quotes in a single API call. Returns dict of symbol -> quote."""
-    symbols = ",".join(tickers)
-    url  = f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols}"
-    data = safe_get(url)
-    if not data:
-        return {}
-    results = data.get("quoteResponse", {}).get("result", [])
-    return {r["symbol"]: r for r in results}
-
-def fetch_chart(symbol):
-    """Fetch 5m chart for a single symbol (needed for RSI calculation)."""
-    url  = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval=5m&range=5d"
-    return safe_get(url)
-
 def run_stock_scan():
-    global daily_spent
-    daily_spent = 0
-    print("\n📈 Stock/ETF scan starting (batched quotes)...\n")
+    print(f"\n📈 Fetching {len(SCAN_TICKERS)} tickers in one batch call...")
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     action_lines = []
 
-    # ── Step 1: fetch ALL quotes in one shot ──────────────────────
-    print(f"Fetching quotes for {len(SCAN_TICKERS)} tickers in one call...")
-    all_quotes = fetch_all_quotes(SCAN_TICKERS)
-    print(f"✅ Got {len(all_quotes)} quotes")
-    time.sleep(2)  # single short pause after the batch call
+    symbols = ",".join(SCAN_TICKERS)
+    data = safe_get(f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols}")
+    if not data:
+        print("❌ Batch quote fetch failed")
+        return
 
-    # ── Step 2: fetch charts individually (needed for RSI) ────────
-    for symbol in SCAN_TICKERS:
+    results = data.get("quoteResponse", {}).get("result", [])
+    print(f"✅ Got {len(results)} quotes\n")
+
+    for q in results:
         try:
-            quote = all_quotes.get(symbol, {})
-            price = quote.get("regularMarketPrice") or quote.get("previousClose", 0)
-            name  = quote.get("shortName", symbol)
+            ticker = q.get("symbol", "")
+            name   = q.get("shortName", ticker)
+            price  = (q.get("regularMarketPrice") or
+                      q.get("postMarketPrice") or
+                      q.get("preMarketPrice") or
+                      q.get("previousClose") or 0)
 
-            if not price:
-                print(f"⚠️  No price for {symbol}, skipping")
-                continue
+            change_pct       = q.get("regularMarketChangePercent")
+            volume           = q.get("regularMarketVolume")
+            avg_volume       = q.get("averageDailyVolume10Day")
+            vol_ratio        = round(volume / avg_volume, 2) if volume and avg_volume else None
+            week52_high      = q.get("fiftyTwoWeekHigh")
+            week52_low       = q.get("fiftyTwoWeekLow")
+            pct_from_high    = round((price / week52_high - 1) * 100, 1) if week52_high else None
+            pct_from_low     = round((price / week52_low  - 1) * 100, 1) if week52_low  else None
+            market_cap       = q.get("marketCap")
+            pe_ratio         = q.get("trailingPE")
+            eps              = q.get("epsTrailingTwelveMonths")
+            post_price       = q.get("postMarketPrice")
+            afterhours_pct   = round((post_price / price - 1) * 100, 2) if post_price and price else None
 
-            # Chart for RSI (still needed per-ticker but we skip if 429)
-            rsi_5     = 50.0
-            vol_ratio = 1.0
-            chart_data = fetch_chart(symbol)
-            if chart_data and chart_data.get("chart", {}).get("result"):
-                res = chart_data["chart"]["result"][0]
-                q   = res["indicators"]["quote"][0]
-                closes  = [x for x in q.get("close",  []) if x is not None]
-                volumes = [x for x in q.get("volume", []) if x is not None]
-                if len(closes) >= 6:
-                    rsi_5 = calculate_rsi(closes[-30:], 5)
-                if volumes:
-                    today_vol = sum(volumes[-78:]) if len(volumes) >= 78 else sum(volumes)
-                    avg_vol   = (sum(volumes) / len(volumes)) * 78
-                    vol_ratio = today_vol / avg_vol if avg_vol else 1.0
+            holding    = HOLDINGS.get(ticker)
+            pl_pct     = round((price / holding["avg"] - 1) * 100, 1) if holding else None
+            hold_value = round(holding["shares"] * price, 2)           if holding else None
 
-            pl_pct = ((price / HOLDINGS[symbol]["avg"]) - 1) * 100 if symbol in HOLDINGS else 0.0
-            vwap_diff_pct = -0.5  # simplified placeholder
+            signal = generate_signal(ticker, price, change_pct, vol_ratio,
+                                     pct_from_high, pct_from_low,
+                                     afterhours_pct, pl_pct)
 
-            quick_signal, quick_why = generate_quick_signal(
-                symbol, price, vwap_diff_pct, rsi_5, vol_ratio, pl_pct, None)
-            long_signal,  long_why  = "LONG HOLD", "Daily indicators skipped (rate limit protection)"
+            row = {
+                "timestamp":        now_str,
+                "type":             "STOCK/ETF",
+                "ticker":           ticker,
+                "name":             name,
+                "price":            round(price, 2),
+                "change_pct":       round(change_pct, 2)  if change_pct  is not None else "",
+                "afterhours_pct":   afterhours_pct         if afterhours_pct is not None else "",
+                "volume":           volume                  if volume      is not None else "",
+                "vol_ratio":        vol_ratio               if vol_ratio   is not None else "",
+                "week52_high":      week52_high             if week52_high is not None else "",
+                "week52_low":       week52_low              if week52_low  is not None else "",
+                "pct_from_52wk_high": pct_from_high        if pct_from_high is not None else "",
+                "pct_from_52wk_low":  pct_from_low         if pct_from_low  is not None else "",
+                "market_cap":       market_cap              if market_cap  is not None else "",
+                "pe_ratio":         round(pe_ratio, 1)      if pe_ratio    is not None else "",
+                "eps":              round(eps, 2)            if eps         is not None else "",
+                "holding_value":    hold_value              if hold_value  is not None else "",
+                "pl_pct":           pl_pct                  if pl_pct      is not None else "",
+                "signal":           signal,
+            }
 
-            log_to_sheet(symbol, name, price, vwap_diff_pct, rsi_5, vol_ratio, pl_pct,
-                         quick_signal, quick_why, None, None, None, "", None,
-                         long_signal, long_why)
+            log_row(row)
 
-            if "BUY" in quick_signal or "SELL" in quick_signal:
-                line = f"{quick_signal} {symbol} @ ${price:,.2f}\n{quick_why}"
-                action_lines.append(line)
-                print(f"🚨 {line}")
-
-            # Much shorter delay — just enough to avoid chart endpoint rate limits
-            time.sleep(2 + random.uniform(1, 3))
+            if signal != "—":
+                action_lines.append(f"{ticker} @ ${price:,.2f}\n{signal}")
+                print(f"🚨 {ticker}: {signal}")
 
         except Exception as e:
-            print(f"Error on {symbol}: {e}")
-            time.sleep(5)
+            print(f"Error on {ticker}: {e}")
 
     if action_lines:
         send_push("📈 Stock Signals", "\n\n".join(action_lines), priority=1)
     else:
-        print("✅ Stock scan complete — no actionable signals")
+        print("✅ No actionable stock signals this scan")
 
-    print("\n📈 Stock/ETF scan complete.\n")
+    print("\n📈 Stock scan complete.\n")
 
 # -------------------------------------------------------------------
-# Crypto scan (CoinGecko — no API key, all coins in one call)
+# Crypto scan — two batch calls (prices + market data)
 # -------------------------------------------------------------------
-CRYPTO_IDS = ["bitcoin", "ethereum", "solana"]
-
 def run_crypto_scan():
-    print("\n₿ Crypto scan starting...\n")
+    print("\n₿ Fetching crypto in batch...\n")
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     action_lines = []
 
-    # ── Fetch all crypto prices in one call ───────────────────────
     ids = ",".join(CRYPTO_IDS)
-    url = (f"https://api.coingecko.com/api/v3/simple/price"
-           f"?ids={ids}&vs_currencies=usd"
-           f"&include_24hr_change=true&include_24hr_vol=true")
+    url = (f"https://api.coingecko.com/api/v3/coins/markets"
+           f"?vs_currency=usd&ids={ids}"
+           f"&order=market_cap_desc"
+           f"&price_change_percentage=24h,7d")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=15) as r:
-            prices = json.loads(r.read().decode())
+            coins = json.loads(r.read().decode())
+        print(f"✅ Got {len(coins)} crypto quotes")
     except Exception as e:
-        print(f"⚠️  CoinGecko price fetch failed: {e}")
-        prices = {}
+        print(f"⚠️  CoinGecko fetch failed: {e}")
+        return
 
-    time.sleep(2)
-
-    for coin_id in CRYPTO_IDS:
+    for coin in coins:
         try:
-            coin_data  = prices.get(coin_id, {})
-            price      = coin_data.get("usd", 0)
-            change_24h = coin_data.get("usd_24h_change", 0)
-            holding    = CRYPTO_HOLDINGS.get(coin_id, {})
-            symbol     = holding.get("symbol", coin_id.upper())
-            avg_cost   = holding.get("avg", 0)
-            units      = holding.get("units", 0)
+            coin_id    = coin.get("id", "")
+            symbol     = coin.get("symbol", "").upper()
+            name       = coin.get("name", symbol)
+            price      = coin.get("current_price", 0)
+            change_24h = coin.get("price_change_percentage_24h")
+            change_7d  = coin.get("price_change_percentage_7d_in_currency")
+            market_cap = coin.get("market_cap")
+            volume_24h = coin.get("total_volume")
+            high_24h   = coin.get("high_24h")
+            low_24h    = coin.get("low_24h")
+            ath        = coin.get("ath")
+            pct_from_ath = coin.get("ath_change_percentage")
 
-            pl_pct = ((price / avg_cost) - 1) * 100 if avg_cost > 0 else 0.0
-            value  = units * price if units else 0.0
+            holding  = CRYPTO_HOLDINGS.get(coin_id, {})
+            avg_cost = holding.get("avg", 0)
+            units    = holding.get("units", 0)
+            pl_pct   = round((price / avg_cost - 1) * 100, 1) if avg_cost > 0 else None
+            hold_val = round(units * price, 2) if units > 0 else None
 
-            # RSI from daily history
-            hist_url = (f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-                        f"?vs_currency=usd&days=20&interval=daily")
-            rsi_14 = rsi_7 = 50.0
-            try:
-                req = urllib.request.Request(hist_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=15) as r:
-                    hist = json.loads(r.read().decode())
-                    closes = [p[1] for p in hist.get("prices", [])]
-                    if len(closes) >= 15:
-                        rsi_14 = calculate_rsi(closes, 14)
-                    if len(closes) >= 8:
-                        rsi_7  = calculate_rsi(closes, 7)
-            except Exception as e:
-                print(f"⚠️  History fetch failed for {coin_id}: {e}")
+            # Crypto signals
+            signals = []
+            if change_24h is not None and change_24h <= -5:
+                signals.append(f"🔴 24h drop ({change_24h:.1f}%)")
+            if change_24h is not None and change_24h >= 5:
+                signals.append(f"🟢 24h surge ({change_24h:.1f}%)")
+            if change_7d is not None and change_7d <= -15:
+                signals.append(f"📉 7d down ({change_7d:.1f}%)")
+            if pct_from_ath is not None and pct_from_ath >= -5:
+                signals.append(f"🚀 Near ATH ({pct_from_ath:.1f}%)")
+            if pl_pct is not None and pl_pct >= 50:
+                signals.append(f"💰 Consider trim (up {pl_pct:.1f}%)")
+            signal = " | ".join(signals) if signals else "—"
 
-            # Signal
-            signal = reason = None
-            if rsi_14 < 30 and change_24h < -5:
-                signal = "BUY — oversold dip"
-                reason = f"RSI14={rsi_14:.0f}, 24h={change_24h:.1f}%"
-            elif rsi_14 > 75 and change_24h > 5:
-                signal = "CONSIDER TRIM"
-                reason = f"RSI14={rsi_14:.0f}, 24h={change_24h:.1f}%"
-            elif pl_pct > 100:
-                signal = "CONSIDER TRIM"
-                reason = f"Up {pl_pct:.0f}% from avg cost"
+            row = {
+                "timestamp":      now_str,
+                "type":           "CRYPTO",
+                "ticker":         symbol,
+                "name":           name,
+                "price":          round(price, 2),
+                "change_pct":     round(change_24h, 2) if change_24h is not None else "",
+                "change_7d_pct":  round(change_7d, 2)  if change_7d  is not None else "",
+                "volume":         volume_24h             if volume_24h is not None else "",
+                "market_cap":     market_cap             if market_cap is not None else "",
+                "high_24h":       high_24h               if high_24h   is not None else "",
+                "low_24h":        low_24h                if low_24h    is not None else "",
+                "ath":            ath                    if ath        is not None else "",
+                "pct_from_ath":   round(pct_from_ath, 1) if pct_from_ath is not None else "",
+                "holding_value":  hold_val               if hold_val   is not None else "",
+                "pl_pct":         pl_pct                 if pl_pct     is not None else "",
+                "signal":         signal,
+            }
 
-            status = (f"${price:,.2f}  24h: {change_24h:+.1f}%  "
-                      f"RSI14: {rsi_14:.0f}  RSI7: {rsi_7:.0f}")
-            if units > 0:
-                status += f"\n  {units} {symbol} = ${value:,.2f}  (P/L: {pl_pct:+.1f}%)"
+            log_row(row)
 
-            print(f"{symbol}: {status}" + (f" → {signal}" if signal else " → HOLD"))
-
-            if signal:
-                action_lines.append(f"₿ {symbol} — {signal}\n{reason}\n{status}")
-
-            time.sleep(2)
+            if signal != "—":
+                action_lines.append(f"{symbol} @ ${price:,.2f}\n{signal}")
+                print(f"🚨 {symbol}: {signal}")
 
         except Exception as e:
             print(f"Error on {coin_id}: {e}")
@@ -420,7 +385,7 @@ def run_crypto_scan():
     if action_lines:
         send_push("₿ Crypto Signals", "\n\n".join(action_lines), priority=1)
     else:
-        print("✅ Crypto scan complete — no actionable signals")
+        print("✅ No actionable crypto signals this scan")
 
     print("\n₿ Crypto scan complete.\n")
 
@@ -429,9 +394,6 @@ def run_crypto_scan():
 # -------------------------------------------------------------------
 if __name__ == "__main__":
     print(f"🚀 Scan started at {datetime.datetime.now()}")
-
-    # Market hours check temporarily removed for testing
     run_stock_scan()
     run_crypto_scan()
-
     print(f"✅ All scans complete at {datetime.datetime.now()}")
