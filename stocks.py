@@ -430,11 +430,8 @@ def run_crypto_scan():
 if __name__ == "__main__":
     print(f"🚀 Scan started at {datetime.datetime.now()}")
 
-    if not is_market_hours():
-        print("⚠️  Market is closed — running crypto scan only")
-        run_crypto_scan()
-    else:
-        run_stock_scan()
-        run_crypto_scan()
+    # Market hours check temporarily removed for testing
+    run_stock_scan()
+    run_crypto_scan()
 
     print(f"✅ All scans complete at {datetime.datetime.now()}")
