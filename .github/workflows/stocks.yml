@@ -1,0 +1,32 @@
+name: 📈 Stock & Crypto Scanner
+on:
+  # Triggered by cron-job.org every 20 minutes during market hours
+  # Set cron-job.org to fire Mon-Fri between 9:30 AM - 4:00 PM CT
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run scanner
+        env:
+          PUSHOVER_USER:  ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+        run: python stocks.py
+
+      - name: Upload logs if failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-logs
+          retention-days: 3
