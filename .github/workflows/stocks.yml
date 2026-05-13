@@ -1,32 +1,30 @@
-name: 📈 Stock & Crypto Scanner
+name: Stock Scanner
+
 on:
-  # Triggered by cron-job.org every 20 minutes during market hours
-  # Set cron-job.org to fire Mon-Fri between 9:30 AM - 4:00 PM CT
-  workflow_dispatch:
+  workflow_dispatch:  # manual trigger only — run from the Actions tab
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
 
     steps:
-      - name: Checkout repo
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
 
-      - name: Run scanner
+      - name: Install dependencies
+        run: pip install gspread
+
+      - name: Run stock scan
         env:
-          PUSHOVER_USER:  ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
-        run: python stocks.py
-
-      - name: Upload logs if failed
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: scan-logs
-          retention-days: 3
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python -c "import stocks; stocks.run_scan()"
