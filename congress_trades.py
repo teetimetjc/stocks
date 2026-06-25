@@ -20,7 +20,8 @@ Env vars required:
   GOOGLE_SHEET_ID     — same spreadsheet used by stocks.py
 
 Env vars optional:
-  PUSHOVER_USER / PUSHOVER_TOKEN  — push alert for each newly logged trade
+  PUSHOVER_USER / PUSHOVER_TOKEN  — one push alert per politician per run,
+                                    summarizing all their newly logged trades
   HOUSE_FEED_URL / SENATE_BASE_URL — override the data source if it moves
   CONGRESS_LOOKBACK_DAYS — how far back (by disclosure date) to consider
                            trades "current"; bounds the first-run backfill
@@ -359,6 +360,31 @@ def send_push(title, message):
     except Exception:
         pass
 
+
+_PUSH_MAX_LINES = 15  # Pushover messages are capped at 1024 chars; keep it skimmable
+
+
+def send_trade_notifications(new_trades):
+    """One push per politician per run, listing all their newly logged trades."""
+    if not new_trades:
+        return
+
+    groups = {}
+    for t in new_trades:
+        groups.setdefault((t["chamber"], t["politician"]), []).append(t)
+
+    for (chamber, politician), trades in groups.items():
+        lines = [
+            f"{t['type']} {t['ticker'] or t['asset']} | {t['amount']} (filed {t['disclosure_date']})"
+            for t in trades
+        ]
+        shown = lines[:_PUSH_MAX_LINES]
+        if len(lines) > _PUSH_MAX_LINES:
+            shown.append(f"...and {len(lines) - _PUSH_MAX_LINES} more")
+
+        title = f"{politician} ({chamber}) — {len(trades)} new trade(s)"
+        send_push(title, "\n".join(shown))
+
 # -------------------------------------------------------------------
 # GOOGLE SHEETS
 # -------------------------------------------------------------------
@@ -495,11 +521,7 @@ def run():
     new_trades = log_new_trades(trades)
     update_trends()
 
-    for t in new_trades:
-        send_push(
-            f"{t['type']} — {t['ticker'] or t['asset']}",
-            f"{t['politician']} ({t['chamber']}) | {t['amount']}\nFiled {t['disclosure_date']}",
-        )
+    send_trade_notifications(new_trades)
 
     print(f"  {len(new_trades)} new trade(s) logged.\n")
 
