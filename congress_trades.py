@@ -2,7 +2,12 @@
 Congressional Trade Monitor
 ---------------------------
 Tracks new stock trades disclosed by members of the U.S. Senate and House
-under the STOCK Act, using the free Senate/House Stock Watcher JSON feeds.
+under the STOCK Act — free, no account/API key required.
+
+House: pulled from a community-maintained JSON mirror of House Clerk PTR
+filings (disclosures-clerk.house.gov), refreshed daily.
+Senate: scraped directly from efdsearch.senate.gov (the official EFD
+search site), since no current free structured feed exists for it.
 
 New disclosures are appended to the "insider trading" tab. A "Trends" tab
 is recomputed on every run with per-ticker and per-politician aggregates,
@@ -16,9 +21,10 @@ Env vars required:
 
 Env vars optional:
   PUSHOVER_USER / PUSHOVER_TOKEN  — push alert for each newly logged trade
-  SENATE_FEED_URL / HOUSE_FEED_URL — override the data source if it moves
+  HOUSE_FEED_URL / SENATE_BASE_URL — override the data source if it moves
   CONGRESS_LOOKBACK_DAYS — how far back (by disclosure date) to consider
-                           trades "current"; bounds the first-run backfill.
+                           trades "current"; bounds the first-run backfill
+                           and how far back the Senate scraper searches.
                            Default 120.
 """
 
@@ -27,6 +33,7 @@ import http.client
 import json
 import os
 import random
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -35,14 +42,11 @@ import urllib.request
 # -------------------------------------------------------------------
 # CONFIG
 # -------------------------------------------------------------------
-SENATE_FEED_URL = os.environ.get(
-    "SENATE_FEED_URL",
-    "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com/aggregate/all_transactions.json",
-)
 HOUSE_FEED_URL = os.environ.get(
     "HOUSE_FEED_URL",
-    "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions_qol.json",
+    "https://raw.githubusercontent.com/TattooedHead/house-stock-watcher-data/main/data/all_transactions.json",
 )
+SENATE_BASE_URL = os.environ.get("SENATE_BASE_URL", "https://efdsearch.senate.gov")
 
 PUSHOVER_USER      = os.environ.get("PUSHOVER_USER", "")
 PUSHOVER_TOKEN     = os.environ.get("PUSHOVER_TOKEN", "")
@@ -60,6 +64,15 @@ TRADES_HEADERS = [
 ]
 
 _UA = "Mozilla/5.0 (compatible; congress-trade-monitor/1.0)"
+
+SENATE_HOME_URL   = f"{SENATE_BASE_URL}/search/home/"
+SENATE_SEARCH_URL = f"{SENATE_BASE_URL}/search/"
+SENATE_DATA_URL   = f"{SENATE_BASE_URL}/search/report/data/"
+SENATE_PTR_TYPE   = 11   # "report_types" code for Periodic Transaction Reports
+SENATE_PAGE_SIZE  = 100
+SENATE_REQUEST_DELAY = 0.3
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # -------------------------------------------------------------------
 # HTTP
@@ -84,6 +97,12 @@ def safe_get_json(url, retries=4):
 # NORMALIZATION
 # -------------------------------------------------------------------
 
+def _clean(value):
+    if not isinstance(value, str):
+        return value
+    return _CONTROL_CHARS_RE.sub("", value).strip()
+
+
 def _parse_date(value):
     if not value:
         return None
@@ -103,35 +122,19 @@ def _first(rec, *keys):
     return ""
 
 
-def normalize_senate(rec):
-    return {
-        "chamber": "Senate",
-        "politician": _first(rec, "senator", "name"),
-        "owner": _first(rec, "owner"),
-        "ticker": _first(rec, "ticker"),
-        "asset": _first(rec, "asset_description", "asset"),
-        "type": _first(rec, "type", "transaction_type"),
-        "amount": _first(rec, "amount"),
-        "comment": _first(rec, "comment"),
-        "transaction_date": _first(rec, "transaction_date"),
-        "disclosure_date": _first(rec, "disclosure_date"),
-        "link": _first(rec, "ptr_link", "link"),
-    }
-
-
 def normalize_house(rec):
     return {
         "chamber": "House",
-        "politician": _first(rec, "representative", "name"),
-        "owner": _first(rec, "owner"),
-        "ticker": _first(rec, "ticker"),
-        "asset": _first(rec, "asset_description", "asset"),
-        "type": _first(rec, "type", "transaction_type"),
-        "amount": _first(rec, "amount"),
-        "comment": _first(rec, "comment", "notes"),
+        "politician": _clean(_first(rec, "representative", "name")),
+        "owner": _clean(_first(rec, "owner")),
+        "ticker": _clean(_first(rec, "ticker")),
+        "asset": _clean(_first(rec, "asset_description", "asset")),
+        "type": _clean(_first(rec, "type", "transaction_type")),
+        "amount": _clean(_first(rec, "amount")),
+        "comment": _clean(_first(rec, "comment", "notes")),
         "transaction_date": _first(rec, "transaction_date"),
         "disclosure_date": _first(rec, "disclosure_date"),
-        "link": _first(rec, "ptr_link", "link"),
+        "link": _first(rec, "ptr_link", "link", "source_url"),
     }
 
 
@@ -145,38 +148,184 @@ def _coerce_list(data):
     return []
 
 
-def fetch_trades():
-    """Fetch + normalize trades from both feeds, bounded by LOOKBACK_DAYS."""
+def fetch_house_trades(cutoff):
+    raw = safe_get_json(HOUSE_FEED_URL)
+    if raw is None:
+        print(f"  [WARNING] No data from House feed ({HOUSE_FEED_URL}); skipping.")
+        return []
+
+    records = _coerce_list(raw)
+    if not records:
+        print("  [WARNING] House feed returned no usable records; skipping.")
+        return []
+
+    trades, kept, skipped = [], 0, 0
+    for rec in records:
+        norm = normalize_house(rec)
+        if not norm["ticker"] or not norm["type"]:
+            skipped += 1
+            continue
+        disclosure_date = _parse_date(norm["disclosure_date"])
+        if disclosure_date and disclosure_date < cutoff:
+            continue
+        trades.append(norm)
+        kept += 1
+    print(f"  House: {kept} kept, {skipped} skipped (missing ticker/type), {len(records)} total")
+    return trades
+
+# -------------------------------------------------------------------
+# SENATE — scraped directly from efdsearch.senate.gov
+# -------------------------------------------------------------------
+
+def _senate_session():
+    import requests
+    from bs4 import BeautifulSoup
+
+    s = requests.Session()
+    s.headers.update({"User-Agent": _UA, "Accept": "application/json, text/javascript, */*"})
+
+    r = s.get(SENATE_HOME_URL, timeout=20)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    csrf_input = soup.find("input", {"name": "csrfmiddlewaretoken"})
+    if not csrf_input:
+        raise RuntimeError("Could not find CSRF token on Senate disclosure search page")
+
+    r = s.post(
+        SENATE_HOME_URL,
+        data={"csrfmiddlewaretoken": csrf_input["value"], "prohibition_agreement": "1"},
+        headers={"Referer": SENATE_HOME_URL},
+        timeout=20,
+    )
+    r.raise_for_status()
+    return s
+
+
+def _senate_filing_index(session, cutoff):
+    """Paginate PTR filings submitted since cutoff (newest first)."""
+    filings = []
+    start = 0
+    csrf = session.cookies.get("csrftoken", "")
+    submitted_start = cutoff.strftime("%m/%d/%Y 00:00:00")
+
+    while True:
+        payload = {
+            "start": start,
+            "length": SENATE_PAGE_SIZE,
+            "report_types": f"[{SENATE_PTR_TYPE}]",
+            "filer_types": "[]",
+            "submitted_start_date": submitted_start,
+            "submitted_end_date": "",
+            "candidate_state": "",
+            "senator_state": "",
+            "office_id": "",
+            "first_name": "",
+            "last_name": "",
+            "csrfmiddlewaretoken": csrf,
+        }
+        r = session.post(SENATE_DATA_URL, data=payload, headers={"Referer": SENATE_SEARCH_URL}, timeout=30)
+        r.raise_for_status()
+        resp = r.json()
+        rows = resp.get("data", [])
+        if not rows:
+            break
+
+        for row in rows:
+            first, last, filing_date, link_html = row[0], row[1], row[4], row[3]
+            href_match = re.search(r'href="([^"]+)"', link_html)
+            if not href_match:
+                continue
+            href = href_match.group(1)
+            filings.append({
+                "politician": f"{first} {last}".strip(),
+                "filing_date": filing_date,
+                "is_pdf": "/view/paper/" in href,
+                "url": f"{SENATE_BASE_URL}{href}",
+            })
+
+        total = resp.get("recordsFiltered", 0)
+        start += SENATE_PAGE_SIZE
+        if start >= total:
+            break
+        time.sleep(SENATE_REQUEST_DELAY)
+
+    return filings
+
+
+def _parse_senate_report(html, filing):
+    from bs4 import BeautifulSoup
+
     trades = []
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", {"id": "ptr-table"}) or soup.find("table")
+    if not table:
+        return trades
+
+    for row in table.find_all("tr")[1:]:
+        cols = [td.get_text(strip=True) for td in row.find_all("td")]
+        if len(cols) < 8:
+            continue
+        tx_date, owner, ticker, asset_desc, _asset_type, tx_type, amount = cols[1:8]
+        comment = cols[8] if len(cols) > 8 else ""
+        if not re.match(r"\d{2}/\d{2}/\d{4}", tx_date):
+            continue
+
+        trades.append({
+            "chamber": "Senate",
+            "politician": filing["politician"],
+            "owner": _clean(owner),
+            "ticker": "" if ticker == "--" else _clean(ticker),
+            "asset": _clean(asset_desc),
+            "type": _clean(tx_type.title()),
+            "amount": _clean(amount),
+            "comment": _clean(comment),
+            "transaction_date": tx_date,
+            "disclosure_date": filing["filing_date"],
+            "link": filing["url"],
+        })
+
+    return trades
+
+
+def fetch_senate_trades(cutoff):
+    """Scrape recent Senate PTR filings directly from efdsearch.senate.gov."""
+    try:
+        session = _senate_session()
+        filings = _senate_filing_index(session, cutoff)
+    except Exception as e:
+        print(f"  [WARNING] Senate filing index failed: {e}")
+        return []
+
+    html_filings = [f for f in filings if not f["is_pdf"]]
+    skipped_pdf = len(filings) - len(html_filings)
+
+    trades, kept = [], 0
+    for filing in html_filings:
+        try:
+            r = session.get(filing["url"], timeout=20)
+            if r.status_code != 200:
+                continue
+            rows = [t for t in _parse_senate_report(r.text, filing) if t["ticker"] and t["type"]]
+            trades.extend(rows)
+            kept += len(rows)
+            time.sleep(SENATE_REQUEST_DELAY)
+        except Exception as e:
+            print(f"  [WARNING] Senate filing parse failed ({filing['url']}): {e}")
+            continue
+
+    print(
+        f"  Senate: {kept} transaction(s) from {len(html_filings)} filing(s) "
+        f"({skipped_pdf} PDF filing(s) skipped), since {cutoff.isoformat()}"
+    )
+    return trades
+
+
+def fetch_trades():
+    """Fetch + normalize trades from House + Senate, bounded by LOOKBACK_DAYS."""
     cutoff = datetime.date.today() - datetime.timedelta(days=LOOKBACK_DAYS)
-
-    for url, normalizer, label in (
-        (SENATE_FEED_URL, normalize_senate, "Senate"),
-        (HOUSE_FEED_URL, normalize_house, "House"),
-    ):
-        raw = safe_get_json(url)
-        if raw is None:
-            print(f"  [WARNING] No data from {label} feed ({url}); skipping.")
-            continue
-
-        records = _coerce_list(raw)
-        if not records:
-            print(f"  [WARNING] {label} feed returned no usable records; skipping.")
-            continue
-
-        kept = skipped = 0
-        for rec in records:
-            norm = normalizer(rec)
-            if not norm["ticker"] or not norm["type"]:
-                skipped += 1
-                continue
-            disclosure_date = _parse_date(norm["disclosure_date"])
-            if disclosure_date and disclosure_date < cutoff:
-                continue
-            trades.append(norm)
-            kept += 1
-        print(f"  {label}: {kept} kept, {skipped} skipped (missing ticker/type), {len(records)} total")
-
+    trades = []
+    trades.extend(fetch_house_trades(cutoff))
+    trades.extend(fetch_senate_trades(cutoff))
     return trades
 
 
