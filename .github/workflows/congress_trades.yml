@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install gspread
+        run: pip install gspread requests beautifulsoup4
 
       - name: Run congressional trade scan
         env:
