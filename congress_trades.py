@@ -131,7 +131,7 @@ def safe_get_json(url, retries=4):
     return None
 
 
-def fetch_yahoo_json(url, retries=5):
+def fetch_yahoo_json(url, retries=3):
     for attempt in range(retries):
         try:
             req = urllib.request.Request(
@@ -140,16 +140,16 @@ def fetch_yahoo_json(url, retries=5):
             with urllib.request.urlopen(req, timeout=20) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
-            wait = (2 ** attempt) * 10 + random.uniform(5, 15) if e.code == 429 else (2 ** attempt) * 3 + random.uniform(1, 3)
             if attempt == retries - 1:
                 print(f"  [WARNING] Yahoo Finance fetch failed ({e.code}) for {url}")
                 return None
+            wait = min((2 ** attempt) * 5 + random.uniform(1, 4), 20)
             time.sleep(wait)
         except Exception as e:
             if attempt == retries - 1:
                 print(f"  [WARNING] Yahoo Finance fetch failed for {url}: {e}")
                 return None
-            time.sleep((2 ** attempt) * 3 + random.uniform(1, 3))
+            time.sleep(min((2 ** attempt) * 2 + random.uniform(1, 2), 10))
     return None
 
 # -------------------------------------------------------------------
@@ -545,11 +545,18 @@ def make_key(t):
 # -------------------------------------------------------------------
 
 _price_history_cache = {}
+_yahoo_consecutive_failures = 0
+_YAHOO_FAILURE_THRESHOLD = 3
+_yahoo_circuit_open = False
 
 
 def get_price_history(ticker):
+    global _yahoo_consecutive_failures, _yahoo_circuit_open
+
     if ticker in _price_history_cache:
         return _price_history_cache[ticker]
+    if _yahoo_circuit_open:
+        return None
 
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}?interval=1d&range=2y"
     data = fetch_yahoo_json(url)
@@ -563,6 +570,16 @@ def get_price_history(ticker):
         result = None
 
     _price_history_cache[ticker] = result
+
+    if result is None:
+        _yahoo_consecutive_failures += 1
+        if _yahoo_consecutive_failures >= _YAHOO_FAILURE_THRESHOLD:
+            _yahoo_circuit_open = True
+            print(f"  [WARNING] Yahoo Finance failed {_yahoo_consecutive_failures} times in a row; "
+                  f"skipping remaining price lookups for this run.")
+    else:
+        _yahoo_consecutive_failures = 0
+
     return result
 
 
