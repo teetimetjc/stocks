@@ -79,6 +79,8 @@ PRICE_TRACKING_DAYS = int(os.environ.get("PRICE_TRACKING_DAYS", "90"))
 
 TRADES_TAB = "insider trading"
 TRENDS_TAB = "Trends"
+HOLDINGS_TAB = "Holdings Breakdown"
+HOLDINGS_TOP_N = 12
 
 TRADES_HEADERS = [
     "Logged At", "Chamber", "Politician", "Owner", "Ticker", "Asset",
@@ -851,6 +853,94 @@ def update_trends():
         print(f"  [WARNING] Trends update failed: {exc}")
         print(traceback.format_exc())
 
+_AMOUNT_NUM_RE = re.compile(r"\$([\d,]+)")
+
+
+def _amount_to_mid(amount_str):
+    """Parse a STOCK Act amount range (e.g. '$1,001 - $15,000') into a
+    rough dollar midpoint for relative weighting. STOCK Act filings disclose
+    ranges by law, not exact amounts, so this is an estimate, not a precise
+    dollar figure.
+    """
+    if not amount_str:
+        return None
+    nums = [float(n.replace(",", "")) for n in _AMOUNT_NUM_RE.findall(amount_str)]
+    if not nums:
+        return None
+    return (nums[0] + nums[1]) / 2 if len(nums) >= 2 else nums[0]
+
+
+def update_holdings_breakdown():
+    """Recompute a 'Holdings Breakdown' tab: for the most active politicians,
+    estimate net (buys minus sells) dollar-weighted exposure per ticker, as a
+    percentage of their total estimated long exposure. This is an
+    approximation — STOCK Act amounts are disclosed as ranges, not exact
+    dollars or share counts, so it's a rough proxy for current holdings,
+    not a precise position.
+    """
+    if not GOOGLE_CREDENTIALS:
+        return
+    try:
+        spreadsheet = _open_sheet()
+        trades_ws = spreadsheet.worksheet(TRADES_TAB)
+        records = trades_ws.get_all_records()
+
+        net_by_politician = {}
+        trade_counts = {}
+        for r in records:
+            pol = r.get("Politician") or "?"
+            ticker = r.get("Ticker") or "?"
+            ttype = (r.get("Type") or "").lower()
+            mid = _amount_to_mid(r.get("Amount Range"))
+            if mid is None:
+                continue
+            is_buy = "purchase" in ttype or "buy" in ttype
+            is_sell = "sale" in ttype or "sell" in ttype
+            if not is_buy and not is_sell:
+                continue
+
+            trade_counts[pol] = trade_counts.get(pol, 0) + 1
+            net_by_ticker = net_by_politician.setdefault(pol, {})
+            net_by_ticker[ticker] = net_by_ticker.get(ticker, 0) + (mid if is_buy else -mid)
+
+        top_politicians = sorted(trade_counts.items(), key=lambda kv: -kv[1])[:HOLDINGS_TOP_N]
+
+        now_est = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=-5)))
+        timestamp = now_est.strftime("%Y-%m-%d %H:%M EST")
+
+        values = [
+            [f"Updated {timestamp} — estimated net holdings for top {len(top_politicians)} most active politician(s)"],
+            ["(Buys minus sells, dollar-weighted by disclosed amount-range midpoint — an approximation, not exact positions)"],
+            [],
+        ]
+
+        for pol, total_trades in top_politicians:
+            net_by_ticker = net_by_politician.get(pol, {})
+            positive = {t: v for t, v in net_by_ticker.items() if v > 0}
+            total_positive = sum(positive.values())
+
+            values.append([f"{pol} — {total_trades} trade(s)"])
+            values.append(["Ticker", "Est. Net Value", "% of Est. Holdings"])
+            if total_positive > 0:
+                for ticker, val in sorted(positive.items(), key=lambda kv: -kv[1]):
+                    values.append([ticker, round(val, 2), f"{val / total_positive * 100:.1f}%"])
+            else:
+                values.append(["(no net long position estimated)", "", ""])
+            values.append([])
+
+        try:
+            ws = spreadsheet.worksheet(HOLDINGS_TAB)
+            ws.clear()
+        except Exception:
+            ws = spreadsheet.add_worksheet(title=HOLDINGS_TAB, rows=max(len(values) + 10, 100), cols=6)
+
+        ws.update(values, value_input_option="USER_ENTERED")
+        print(f"  [SHEETS] '{HOLDINGS_TAB}' updated ({len(top_politicians)} politician(s))")
+    except Exception as exc:
+        import traceback
+        print(f"  [WARNING] Holdings breakdown update failed: {exc}")
+        print(traceback.format_exc())
+
 # -------------------------------------------------------------------
 # ENTRY POINT
 # -------------------------------------------------------------------
@@ -866,6 +956,7 @@ def run():
     new_trades = log_new_trades(trades)
     update_price_tracking()
     update_trends()
+    update_holdings_breakdown()
 
     send_trade_notifications(new_trades)
 
