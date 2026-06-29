@@ -2,6 +2,12 @@ name: Stock Scanner
 
 on:
   workflow_dispatch:
+  schedule:
+    # Every 20 min, 13:00-21:40 UTC, Mon-Fri — wide enough to bracket
+    # US market hours (9:30-16:00 ET) across both EDT and EST. The
+    # script itself checks is_market_hours() and skips outside that
+    # window, so off-hours runs are cheap no-ops.
+    - cron: '0,20,40 13-21 * * 1-5'
 
 jobs:
   scan:

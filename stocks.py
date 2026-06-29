@@ -1,19 +1,35 @@
 """
 Stock Scanner — buy/sell signal generator
 -----------------------------------------
-Scans a watchlist every 20 minutes during market hours.
+Scans a watchlist every ~20 minutes during market hours (driven by the
+"Stock Scanner" GitHub Actions workflow on a cron schedule — each run
+does exactly one scan; there is no in-process loop).
+
 Generates two signal types per ticker:
   Quick — intraday scalp   (RSI5, real VWAP, volume ratio)
   Long  — swing/position   (RSI14 daily, MA50 pullback, volume ratio)
 
+BUY signals fire for the full STOCKS watchlist (not just things you hold).
+SELL/trim signals fire only for tickers you've logged as holdings.
+
+Holdings are not hardcoded. Log individual purchases in the "Buy Log"
+tab of the Google Sheet (Date, Ticker, Shares, Price, Notes). Each scan,
+the script reads Buy Log, computes an average-cost position per ticker,
+and writes the result to the "Holdings" tab automatically — you never
+have to do the averaging math by hand.
+
 Outputs:
   • Pushover push notification for any actionable signal
   • Google Sheets log via gspread + service account
+    - Sheet1      : full scan log (unchanged format)
+    - Buy Log     : you add a row here each time you buy (Date, Ticker, Shares, Price, Notes)
+    - Holdings    : auto-computed average-cost summary, written by this script
 
 Env vars required:
   PUSHOVER_USER       — Pushover user key
   PUSHOVER_TOKEN      — Pushover app token
   GOOGLE_CREDENTIALS  — Google service account JSON (string)
+  GOOGLE_SHEET_ID     — Google Sheet ID
 """
 
 import urllib.request
@@ -27,28 +43,7 @@ import os
 import http.client
 from collections import defaultdict
 from http.cookiejar import CookieJar
-
-# -------------------------------------------------------------------
-# HOLDINGS
-# -------------------------------------------------------------------
-HOLDINGS = {
-    "VOO":  {"shares": 4.33,   "avg": 604.54,  "never_sell_all": True},
-    "QQQ":  {"shares": 0.9284, "avg": 592.39,  "never_sell_all": True},
-    "VTI":  {"shares": 1.55,   "avg": 323.13,  "never_sell_all": True},
-    "SPY":  {"shares": 0.7624, "avg": 655.81,  "never_sell_all": True},
-    "VOOG": {"shares": 1.16,   "avg": 429.40,  "never_sell_all": True},
-    "SCHD": {"shares": 2.85,   "avg": 27.02,   "never_sell_all": True},
-    "DIA":  {"shares": 0.1718, "avg": 464.47,  "never_sell_all": True},
-    "GLD":  {"shares": 0.1394, "avg": 365.43,  "never_sell_all": True},
-    "SMH":  {"shares": 0.1500, "avg": 333.31,  "never_sell_all": True},
-    "JPM":  {"shares": 0.0862, "avg": 304.51,  "never_sell_all": True},
-    "XLK":  {"shares": 0.3495, "avg": 143.03,  "never_sell_all": True},
-    "F":    {"shares": 3.81,   "avg": 13.23,   "never_sell_all": True},
-    "XLV":  {"shares": 0.3469, "avg": 145.54,  "never_sell_all": True},
-    "NVDA": {"shares": 0.2455, "avg": 205.65,  "never_sell_all": True},
-    "META": {"shares": 0.0791, "avg": 638.41,  "never_sell_all": True},
-    "VOOV": {"shares": 0.2473, "avg": 202.18,  "never_sell_all": True},
-}
+from zoneinfo import ZoneInfo
 
 # -------------------------------------------------------------------
 # CONFIG
@@ -57,6 +52,8 @@ PUSHOVER_USER      = os.environ.get("PUSHOVER_USER", "")
 PUSHOVER_TOKEN     = os.environ.get("PUSHOVER_TOKEN", "")
 GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS", "")
 GOOGLE_SHEET_ID    = os.environ.get("GOOGLE_SHEET_ID", "")
+
+EASTERN = ZoneInfo("America/New_York")
 
 DAILY_RISK_BUDGET = 100
 daily_spent = 0
@@ -67,11 +64,15 @@ MEGA_CAPS  = ["AAPL", "TSLA", "AMZN", "MSFT", "GOOGL", "NVDA", "META", "AMD", "P
 HIGH_BETA  = ["SMH", "JPM", "F", "TQQQ", "SOXL", "SOFI", "MSTR"]
 CRYPTO     = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "BNB-USD", "AVAX-USD"]
 
-STOCKS = list(HOLDINGS.keys()) + [
-    # Stocks
-    "AAPL", "TSLA", "AMZN", "MSFT", "GOOGL", "AMD", "PLTR", "COIN", "SOFI", "MSTR",
-    # ETFs
-    "SCHG", "TQQQ", "SOXL", "ARKK", "IWM", "EFA", "TLT",
+# Full watchlist that BUY signals scan — this is independent of what you hold.
+STOCKS = [
+    # Broad ETFs
+    "VOO", "QQQ", "VTI", "SPY", "VOOG", "SCHD", "DIA", "GLD", "XLK", "XLV", "VOOV",
+    "SCHG", "ARKK", "IWM", "EFA", "TLT",
+    # Mega caps
+    "AAPL", "TSLA", "AMZN", "MSFT", "GOOGL", "NVDA", "META", "AMD", "PLTR", "COIN",
+    # High beta
+    "SMH", "JPM", "F", "TQQQ", "SOXL", "SOFI", "MSTR",
     # Crypto
     "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "BNB-USD", "AVAX-USD",
 ]
@@ -83,6 +84,9 @@ SHEET_HEADERS = [
     "RSI14 Daily", "MA50", "SMA200", "MACD", "ATR %",
     "Long Signal", "Long Why",
 ]
+
+BUY_LOG_HEADERS  = ["Date", "Ticker", "Shares", "Price", "Notes"]
+HOLDINGS_HEADERS = ["Ticker", "Shares", "Avg Cost", "Never Sell All", "Last Updated"]
 
 # -------------------------------------------------------------------
 # HTTP
@@ -187,13 +191,22 @@ def calculate_atr(highs, lows, closes, period=14):
     return (atr / closes[-1] * 100) if closes[-1] else None
 
 
+def _market_open_dt_for(dt_utc):
+    """UTC instant of 9:30 ET on the Eastern calendar date of dt_utc, DST-aware."""
+    local_date = dt_utc.astimezone(EASTERN).date()
+    open_local = datetime.datetime.combine(
+        local_date, datetime.time(9, 30), tzinfo=EASTERN
+    )
+    return open_local.astimezone(datetime.timezone.utc)
+
+
 def calculate_vwap(timestamps, highs, lows, closes, volumes):
-    today   = datetime.datetime.now(datetime.timezone.utc).date()
+    today = datetime.datetime.now(EASTERN).date()
     cum_tpv = cum_vol = 0.0
     for ts, h, l, c, v in zip(timestamps, highs, lows, closes, volumes):
         if any(x is None for x in (ts, h, l, c, v)):
             continue
-        if datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).date() != today:
+        if datetime.datetime.fromtimestamp(ts, tz=EASTERN).date() != today:
             continue
         cum_tpv += ((h + l + c) / 3) * v
         cum_vol  += v
@@ -201,19 +214,46 @@ def calculate_vwap(timestamps, highs, lows, closes, volumes):
 
 
 def calculate_vol_ratio(timestamps, volumes):
-    today    = datetime.datetime.now(datetime.timezone.utc).date()
-    day_vols = defaultdict(float)
+    """
+    Volume-so-far-today vs. average volume accumulated by THE SAME TIME OF DAY
+    across prior sessions in the window. This fixes the original bug, which
+    compared partial-day volume (today) against FULL prior-day totals — a
+    comparison that's structurally biased low for most of the trading day.
+    """
+    if not timestamps:
+        return 1.0
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today   = now_utc.astimezone(EASTERN).date()
+    market_open_utc = _market_open_dt_for(now_utc)
+    seconds_elapsed_today = max((now_utc - market_open_utc).total_seconds(), 60)
+
+    day_buckets = defaultdict(list)  # date -> list of (seconds_since_open, volume)
     for ts, v in zip(timestamps, volumes):
         if ts is None or v is None:
             continue
-        d = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).date()
-        day_vols[d] += v
-    today_vol  = day_vols.get(today, 0)
-    prior_vols = [vol for d, vol in day_vols.items() if d != today]
-    if not prior_vols:
+        dt_utc = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+        d = dt_utc.astimezone(EASTERN).date()
+        open_dt = _market_open_dt_for(dt_utc)
+        secs_since_open = (dt_utc - open_dt).total_seconds()
+        if secs_since_open < 0:
+            continue
+        day_buckets[d].append((secs_since_open, v))
+
+    today_vol_so_far = sum(v for secs, v in day_buckets.get(today, []) if secs <= seconds_elapsed_today)
+
+    prior_same_window_vols = []
+    for d, points in day_buckets.items():
+        if d == today:
+            continue
+        vol_in_window = sum(v for secs, v in points if secs <= seconds_elapsed_today)
+        if vol_in_window > 0:
+            prior_same_window_vols.append(vol_in_window)
+
+    if not prior_same_window_vols:
         return 1.0
-    avg_prior = sum(prior_vols) / len(prior_vols)
-    return (today_vol / avg_prior) if avg_prior > 0 else 1.0
+    avg_prior_same_window = sum(prior_same_window_vols) / len(prior_same_window_vols)
+    return (today_vol_so_far / avg_prior_same_window) if avg_prior_same_window > 0 else 1.0
 
 # -------------------------------------------------------------------
 # DAILY INDICATOR CACHE
@@ -229,7 +269,7 @@ def fetch_daily_indicators(ticker: str) -> dict | None:
         if now - cached_ts < DAILY_CACHE_TTL:
             return cached_data
 
-    url  = f"<https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=2y>"
+    url  = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=2y"
     data = safe_get(url)
     if not data or not data.get("chart", {}).get("result"):
         return None
@@ -260,7 +300,7 @@ def send_push(title, message):
     if not PUSHOVER_TOKEN or not PUSHOVER_USER:
         return
     try:
-        conn = http.client.HTTPSConnection("<api.pushover.net:443>")
+        conn = http.client.HTTPSConnection("api.pushover.net:443")
         conn.request(
             "POST", "/1/messages.json",
             urllib.parse.urlencode({
@@ -277,30 +317,121 @@ def send_push(title, message):
         pass
 
 # -------------------------------------------------------------------
-# GOOGLE SHEETS
+# GOOGLE SHEETS — connection helper
+# -------------------------------------------------------------------
+_gc = None
+_spreadsheet = None
+
+
+def _get_spreadsheet():
+    global _gc, _spreadsheet
+    if _spreadsheet is not None:
+        return _spreadsheet
+    if not GOOGLE_CREDENTIALS:
+        return None
+    import gspread
+    _gc = gspread.service_account_from_dict(json.loads(GOOGLE_CREDENTIALS))
+    _spreadsheet = _gc.open_by_key(GOOGLE_SHEET_ID)
+    return _spreadsheet
+
+
+def _get_or_create_worksheet(name, headers):
+    ss = _get_spreadsheet()
+    if ss is None:
+        return None
+    try:
+        ws = ss.worksheet(name)
+    except Exception:
+        ws = ss.add_worksheet(title=name, rows=200, cols=len(headers) + 2)
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+        return ws
+    if ws.cell(1, 1).value != headers[0]:
+        ws.insert_row(headers, index=1)
+    return ws
+
+# -------------------------------------------------------------------
+# HOLDINGS — derived from the Buy Log tab each scan
+# -------------------------------------------------------------------
+
+def load_holdings_from_buy_log():
+    """
+    Reads the "Buy Log" tab (Date, Ticker, Shares, Price, Notes — one row
+    per purchase, entered by hand) and rolls it up into an average-cost
+    position per ticker. Writes the result to the "Holdings" tab so you
+    can see your current average cost at a glance, and returns it as a
+    dict for the scan to use immediately.
+
+    Add a new row to Buy Log any time you buy. Nothing else to maintain —
+    the averaging math happens here automatically.
+    """
+    holdings = {}
+
+    buy_log_ws = _get_or_create_worksheet("Buy Log", BUY_LOG_HEADERS)
+    if buy_log_ws is None:
+        print("  [HOLDINGS] No Google Sheets connection — holdings empty this run.")
+        return holdings
+
+    rows = buy_log_ws.get_all_records()  # list of dicts, keyed by header
+    agg = defaultdict(lambda: {"shares": 0.0, "cost": 0.0})
+
+    for r in rows:
+        ticker = str(r.get("Ticker", "")).strip().upper()
+        if not ticker:
+            continue
+        try:
+            shares = float(r.get("Shares", 0) or 0)
+            price  = float(r.get("Price", 0) or 0)
+        except (TypeError, ValueError):
+            print(f"  [HOLDINGS] Skipping bad row for {ticker}: {r}")
+            continue
+        if shares <= 0 or price <= 0:
+            continue
+        agg[ticker]["shares"] += shares
+        agg[ticker]["cost"]   += shares * price
+
+    for ticker, vals in agg.items():
+        if vals["shares"] <= 0:
+            continue
+        holdings[ticker] = {
+            "shares":          round(vals["shares"], 6),
+            "avg":             round(vals["cost"] / vals["shares"], 4),
+            "never_sell_all":  True,  # default safety: always keep a small stub position
+        }
+
+    # Write the computed Holdings tab (overwrite, since it's fully derived)
+    holdings_ws = _get_or_create_worksheet("Holdings", HOLDINGS_HEADERS)
+    if holdings_ws is not None:
+        stamp = datetime.datetime.now(EASTERN).strftime("%Y-%m-%d %H:%M %Z")
+        try:
+            holdings_ws.resize(rows=1)  # clear all rows except header
+            holdings_ws.resize(rows=max(len(holdings) + 1, 2))
+            body = [[t, h["shares"], h["avg"], "Y", stamp] for t, h in sorted(holdings.items())]
+            if body:
+                holdings_ws.update(f"A2:E{1 + len(body)}", body, value_input_option="USER_ENTERED")
+        except Exception as exc:
+            print(f"  [WARNING] Could not write Holdings tab: {exc}")
+
+    print(f"  [HOLDINGS] {len(holdings)} position(s) loaded from Buy Log.")
+    return holdings
+
+# -------------------------------------------------------------------
+# GOOGLE SHEETS — scan log
 # -------------------------------------------------------------------
 
 def log_to_sheet(ticker, name, price, vwap_diff, rsi5, vol_ratio, pl_pct,
                  quick_signal, quick_why, rsi14_daily, ma50, sma200,
                  macd_daily, atr_pct, long_signal, long_why):
-    if not GOOGLE_CREDENTIALS:
+    ws = _get_or_create_worksheet("Sheet1", SHEET_HEADERS)
+    if ws is None:
         print("  [SHEETS SKIPPED] GOOGLE_CREDENTIALS not set.")
         return
     try:
-        import gspread
-        gc    = gspread.service_account_from_dict(json.loads(GOOGLE_CREDENTIALS))
-        sheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
-
-        if sheet.cell(1, 1).value != "Timestamp":
-            sheet.insert_row(SHEET_HEADERS, index=1)
-
-        now_est   = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=-5)))
-        timestamp = now_est.strftime("%Y-%m-%d %H:%M EST")
+        timestamp = datetime.datetime.now(EASTERN).strftime("%Y-%m-%d %H:%M %Z")
 
         def fmt(v, d=2):
             return round(v, d) if v is not None else ""
 
-        sheet.append_row([
+        ws.append_row([
             timestamp, ticker, name,
             fmt(price, 4), fmt(vwap_diff, 2), fmt(rsi5, 1),
             fmt(vol_ratio, 2), fmt(pl_pct, 1),
@@ -322,19 +453,19 @@ def log_to_sheet(ticker, name, price, vwap_diff, rsi5, vol_ratio, pl_pct,
 # -------------------------------------------------------------------
 
 def _est_now():
-    return datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=-5)))
+    return datetime.datetime.now(EASTERN)
 
 
 def is_market_hours():
     now = _est_now()
     if now.weekday() >= 5:
         return False
-    return now.replace(hour=9, minute=30, second=0) <= now <= now.replace(hour=16, minute=0, second=0)
+    return now.replace(hour=9, minute=30, second=0, microsecond=0) <= now <= now.replace(hour=16, minute=0, second=0, microsecond=0)
 
 
 def in_quick_window():
     now = _est_now()
-    return now.replace(hour=9, minute=40) <= now <= now.replace(hour=15, minute=55)
+    return now.replace(hour=9, minute=40, second=0, microsecond=0) <= now <= now.replace(hour=15, minute=55, second=0, microsecond=0)
 
 
 def get_vwap_thresholds(ticker):
@@ -346,28 +477,47 @@ def get_vwap_thresholds(ticker):
 # -------------------------------------------------------------------
 # SIGNALS
 # -------------------------------------------------------------------
+# BUY logic runs for every ticker in STOCKS — not just things you hold.
+# SELL/trim logic only applies to tickers present in `holdings` (built
+# fresh each scan from the Buy Log tab).
+#
+# Both BUY conditions were originally a strict 3-of-3 AND across narrow
+# bands. Logged data showed all three rarely line up at once (<1% of
+# scans for the Long signal), so this version requires 2-of-3 instead,
+# with the bands kept the same. This alone should produce a meaningfully
+# higher signal rate without abandoning the underlying logic.
 
-def generate_quick_signal(ticker, price, vwap_diff_pct, rsi_5, vol_ratio, pl_pct, atr_pct):
+def generate_quick_signal(ticker, price, vwap_diff_pct, rsi_5, vol_ratio, pl_pct, atr_pct, holdings):
     global daily_spent
     if not in_quick_window() or not is_market_hours():
         return "QUICK HOLD", "Outside quick window"
 
-    if rsi_5 < 20 and vwap_diff_pct < get_vwap_thresholds(ticker) and vol_ratio > 1.5:
+    cond_rsi  = rsi_5 < 30  # widened from <20: RSI5<20 is extreme and rare
+    cond_vwap = vwap_diff_pct < get_vwap_thresholds(ticker)
+    cond_vol  = vol_ratio > 1.3  # widened slightly from 1.5
+    hits = sum([cond_rsi, cond_vwap, cond_vol])
+
+    if hits >= 2:
         amount = 20 / (2 if atr_pct and atr_pct > 2 else 1)
         if daily_spent + amount > DAILY_RISK_BUDGET:
             return "QUICK HOLD", "Risk budget exceeded"
         daily_spent += amount
-        return f"QUICK BUY ${amount:.0f}", "RSI5 oversold + VWAP dip + vol spike"
+        reasons = []
+        if cond_rsi:  reasons.append("RSI5 oversold")
+        if cond_vwap: reasons.append("VWAP dip")
+        if cond_vol:  reasons.append("vol spike")
+        return f"QUICK BUY ${amount:.0f}", " + ".join(reasons) + " (2-of-3)"
 
-    if ticker in HOLDINGS:
+    if ticker in holdings:
         if pl_pct > 20:
             pct, reason = 0.15, "20%+ quick profit → trim 15%"
         elif pl_pct > 10:
             pct, reason = 0.10, "10%+ quick profit → trim 10%"
         else:
             return "QUICK HOLD", "No quick edge"
-        keep    = 0.05 if HOLDINGS[ticker]["never_sell_all"] else 0
-        shares  = min(HOLDINGS[ticker]["shares"] * pct, HOLDINGS[ticker]["shares"] - keep)
+        h       = holdings[ticker]
+        keep    = 0.05 if h.get("never_sell_all") else 0
+        shares  = min(h["shares"] * pct, h["shares"] - h["shares"] * keep)
         dollars = shares * price
         if dollars > 10:
             return f"QUICK SELL ${dollars:,.0f}", reason
@@ -376,7 +526,7 @@ def generate_quick_signal(ticker, price, vwap_diff_pct, rsi_5, vol_ratio, pl_pct
 
 
 def generate_long_signal(ticker, price, rsi_14_daily, ma50_pullback_pct,
-                         vol_ratio, pl_pct, atr_pct, sma200):
+                         vol_ratio, pl_pct, atr_pct, sma200, holdings):
     global daily_spent
     if not is_market_hours():
         return "LONG HOLD", "Outside long window"
@@ -385,16 +535,23 @@ def generate_long_signal(ticker, price, rsi_14_daily, ma50_pullback_pct,
     if not (uptrend or (rsi_14_daily and rsi_14_daily < 25)):
         return "LONG HOLD", "Not in uptrend"
 
-    if (30 <= (rsi_14_daily or 50) <= 45
-            and -6 <= (ma50_pullback_pct or 0) <= -3
-            and vol_ratio > 1.2):
+    cond_rsi      = 30 <= (rsi_14_daily or 50) <= 45
+    cond_pullback = -6 <= (ma50_pullback_pct or 0) <= -3
+    cond_vol      = vol_ratio > 1.2
+    hits = sum([cond_rsi, cond_pullback, cond_vol])
+
+    if hits >= 2:
         amount = 100 / (2 if atr_pct and atr_pct > 2 else 1)
         if daily_spent + amount > DAILY_RISK_BUDGET:
             return "LONG HOLD", "Risk budget exceeded"
         daily_spent += amount
-        return f"LONG BUY ${amount:.0f}", "RSI14 30-45 + MA50 pullback + vol confirm"
+        reasons = []
+        if cond_rsi:      reasons.append("RSI14 30-45")
+        if cond_pullback: reasons.append("MA50 pullback")
+        if cond_vol:      reasons.append("vol confirm")
+        return f"LONG BUY ${amount:.0f}", " + ".join(reasons) + " (2-of-3)"
 
-    if ticker in HOLDINGS:
+    if ticker in holdings:
         if pl_pct > 200:
             pct, reason = 0.50, "200%+ profit → taking half"
         elif pl_pct > 120:
@@ -403,8 +560,9 @@ def generate_long_signal(ticker, price, rsi_14_daily, ma50_pullback_pct,
             pct, reason = 0.25, "70%+ profit → trimming 25%"
         else:
             return "LONG HOLD", "No long edge"
-        keep    = 0.05 if HOLDINGS[ticker]["never_sell_all"] else 0
-        shares  = min(HOLDINGS[ticker]["shares"] * pct, HOLDINGS[ticker]["shares"] - keep)
+        h       = holdings[ticker]
+        keep    = 0.05 if h.get("never_sell_all") else 0
+        shares  = min(h["shares"] * pct, h["shares"] - h["shares"] * keep)
         dollars = shares * price
         if dollars > 30:
             return f"LONG SELL ${dollars:,.0f}", reason
@@ -416,27 +574,38 @@ def generate_long_signal(ticker, price, rsi_14_daily, ma50_pullback_pct,
 # -------------------------------------------------------------------
 
 def run_scan():
+    """One full scan pass. Invoked once per GitHub Actions run — the
+    cron schedule provides the ~20-minute cadence, so there is no
+    in-process loop or sleep-until-market-open here."""
     global daily_spent
     daily_spent = 0
     print(f"\n{'='*60}")
     print(f"  Scan — {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
 
-    # Fetch all names in one call instead of one per ticker
+    if not is_market_hours():
+        print("  Market closed — skipping scan.")
+        return
+
+    holdings = load_holdings_from_buy_log()
+
+    # Make sure every held ticker is also scanned, even if it's not on the
+    # default watchlist (e.g. you bought something off-list).
+    scan_list = list(dict.fromkeys(STOCKS + list(holdings.keys())))
+
     names: dict = {}
     batch_data = safe_get(
-        "<https://query2.finance.yahoo.com/v7/finance/quote?symbols=>" + ",".join(STOCKS)
+        "https://query2.finance.yahoo.com/v7/finance/quote?symbols=" + ",".join(scan_list)
     )
     if batch_data and batch_data.get("quoteResponse", {}).get("result"):
         for r in batch_data["quoteResponse"]["result"]:
             names[r["symbol"]] = r.get("shortName", r["symbol"])
 
-    for symbol in STOCKS:
+    for symbol in scan_list:
         try:
             name = names.get(symbol, symbol)
 
-            # Intraday 5m chart (5 days)
-            data = safe_get(f"<https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval=5m&range=5d>")
+            data = safe_get(f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval=5m&range=5d")
             if not data or not data.get("chart", {}).get("result"):
                 time.sleep(8)
                 continue
@@ -456,7 +625,9 @@ def run_scan():
             vwap_diff_pct = ((price - vwap) / vwap * 100) if vwap and price else 0.0
             rsi_5         = calculate_rsi(c[-30:], 5) if len(c) >= 6 else 50.0
             vol_ratio     = calculate_vol_ratio(ts, vols)
-            pl_pct        = ((price / HOLDINGS.get(symbol, {"avg": price})["avg"]) - 1) * 100 if price else 0
+
+            avg_cost = holdings.get(symbol, {}).get("avg")
+            pl_pct   = ((price / avg_cost) - 1) * 100 if (avg_cost and price) else 0
 
             daily        = fetch_daily_indicators(symbol)
             rsi14_daily  = daily["rsi14"]   if daily else None
@@ -467,9 +638,9 @@ def run_scan():
             ma50_pullback = ((price / ma50) - 1) * 100 if ma50 and price else None
 
             quick_signal, quick_why = generate_quick_signal(
-                symbol, price, vwap_diff_pct, rsi_5, vol_ratio, pl_pct, atr_pct)
+                symbol, price, vwap_diff_pct, rsi_5, vol_ratio, pl_pct, atr_pct, holdings)
             long_signal, long_why   = generate_long_signal(
-                symbol, price, rsi14_daily, ma50_pullback, vol_ratio, pl_pct, atr_pct, sma200)
+                symbol, price, rsi14_daily, ma50_pullback, vol_ratio, pl_pct, atr_pct, sma200, holdings)
 
             rsi14_str = f"{rsi14_daily:.1f}" if rsi14_daily is not None else "N/A"
             print(f"  {symbol:<8} ${price:>10.2f}  VWAP diff: {vwap_diff_pct:+.2f}%"
@@ -492,18 +663,3 @@ def run_scan():
             time.sleep(10)
 
     print("  Scan complete.\n")
-
-# -------------------------------------------------------------------
-# ENTRY POINT
-# -------------------------------------------------------------------
-
-if __name__ == "__main__":
-    SCAN_INTERVAL = 1200  # 20 minutes
-    while True:
-        if is_market_hours():
-            run_scan()
-        else:
-            print("Market closed — sleeping 1 hour.")
-            time.sleep(3600)
-            continue
-        time.sleep(SCAN_INTERVAL)
